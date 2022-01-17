@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+from cm import CableModem
+from prometheus_client.core import (
+    GaugeMetricFamily,
+    CounterMetricFamily,
+    InfoMetricFamily,
+    REGISTRY,
+)
+from prometheus_client import start_http_server, Histogram
+from time import sleep
+import argparse
+from threading import Thread, Event
+import logging
+import signal
+
+logger = logging.getLogger("ubee-exporter")
+
+event = Event()
+UPDATE_TIME = Histogram(
+    "cable_modem_update_seconds",
+    "Time spent updating information from modem",
+    buckets=(0.5, 1.0, 5.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 30.0),
+)
+
+
+class CableModemCollector:
+    def __init__(self, cm: CableModem):
+        self.cm = cm
+
+    def collect(self):
+        data = self.cm.data
+
+        if not data:
+            return
+
+        yield InfoMetricFamily(
+            "cable_modem",
+            "Modem information",
+            value={
+                "model": data.model,
+                "hardware_version": data.hardware_version,
+                "software_version": data.software_version,
+                "docsis_version": data.docsis_version,
+                "mac_address": data.mac,
+                "serial": data.serial,
+            },
+        )
+        yield InfoMetricFamily(
+            "cable_modem_connection",
+            "Modem connection information",
+            value={
+                "frequency": str(data.frequency),
+                "config_file": data.cfg_file,
+                "security": data.security_type,
+                "boot_status": data.boot_status,
+                "cfg_status": data.cfg_status,
+                "conn_status": data.conn_status,
+            },
+        )
+        yield GaugeMetricFamily(
+            "cable_modem_temperature_c",
+            "Board temperature in Celsius",
+            value=data.board_temperature,
+        )
+
+        yield CounterMetricFamily(
+            "cable_modem_uptime",
+            "Cable modem uptime in seconds",
+            value=data.uptime,
+        )
+
+        ds_info = InfoMetricFamily(
+            "cable_modem_downstream_channel", "Cable modem downstream channel Info."
+        )
+        ds_power = GaugeMetricFamily(
+            "cable_modem_downstream_channel_power",
+            "Cable modem downstream channel Power (hundredths dBmV).",
+            labels=["id"],
+        )
+        ds_snr = GaugeMetricFamily(
+            "cable_modem_downstream_channel_snr",
+            "Cable modem downstream channel SNR (hundredths dB)",
+            labels=["id"],
+        )
+        ds_correctables = GaugeMetricFamily(
+            "cable_modem_downstream_channel_correctables",
+            "Cable modem downstream channel Correctables",
+            labels=["id"],
+        )
+        ds_uncorrectables = GaugeMetricFamily(
+            "cable_modem_downstream_channel_uncorrectables",
+            "Cable modem downstream channel Uncorrectables",
+            labels=["id"],
+        )
+
+        for channel in data.downstream_channels:
+            ds_info.add_metric(
+                [],
+                value={
+                    "id": str(channel.id),
+                    "type": channel.type_name,
+                    "modulation": channel.modulation_name,
+                    "frequency": str(channel.frequency),
+                    "width": str(channel.width),
+                },
+            )
+            ds_power.add_metric([str(channel.id)], channel.power)
+            ds_snr.add_metric([str(channel.id)], channel.snr)
+            ds_correctables.add_metric([str(channel.id)], channel.correctables)
+            ds_uncorrectables.add_metric([str(channel.id)], channel.uncorrectables)
+        yield ds_info
+        yield ds_power
+        yield ds_snr
+        yield ds_correctables
+        yield ds_uncorrectables
+
+        us_info = InfoMetricFamily(
+            "cable_modem_upstream_channel", "Cable modem upstream channel Info."
+        )
+        us_power = GaugeMetricFamily(
+            "cable_modem_upstream_channel_power",
+            "Cable modem upstream channel Power (hundredths dBmV).",
+            labels=["id"],
+        )
+
+        for channel in data.upstream_channels:
+            us_info.add_metric(
+                [],
+                value={
+                    "id": str(channel.id),
+                    "type": channel.type_name,
+                    "modulation": channel.modulation_name,
+                    "frequency": str(channel.frequency),
+                    "width": str(channel.width),
+                },
+            )
+            us_power.add_metric([str(channel.id)], channel.power)
+
+        yield us_info
+        yield us_power
+
+
+def update_modem_info(cm: CableModem):
+    while not event.is_set():
+        with UPDATE_TIME.time():
+            cm.update()
+        logger.info("Data retrieved from modem.")
+        if not event.is_set():
+            sleep(20)
+    logger.info("Stopping update thread.")
+
+def exit_handler(signum, frame):
+    if event.is_set():
+        logger.error("Exiting now!")
+        exit(1)
+    logger.info("Waiting for updater thread to finish and exit!")
+    event.set()
+
+if __name__ == "__main__":
+
+    logging.basicConfig(level=logging.INFO)
+
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="An exporter for the Ubee UBC1318 cable modem (commonly used by Ziggo, a Dutch ISP).",
+    )
+
+    parser.add_argument("--modem-host", default="192.168.178.1", type=str, help="Host to connect to the modem.")
+    parser.add_argument(
+        "--modem-tls",
+        action="store_true",
+        help="Use a TLS connection to the modem (for example when modem is behind a reverse proxy).",
+    )
+    parser.add_argument("--metrics-port", default=9908, type=int, help="Port to listen on.")
+    parser.add_argument("--metrics-listen", default="", type=str, help="IP to listen on.")
+    parser.add_argument(
+        "--wait-for-initial-data",
+        action="store_true",
+        help="Only start listening for metric requests once initial data has been loaded from the modem.",
+    )
+
+    args = parser.parse_args()
+    signal.signal(signal.SIGINT, exit_handler)
+
+    cm = CableModem(host=args.modem_host, update_on_init=args.wait_for_initial_data)
+
+    REGISTRY.register(CableModemCollector(cm))
+
+    start_http_server(port=args.metrics_port, addr=args.metrics_listen)
+    logger.info("Metrics exporter started on %s:%s", args.metrics_listen, args.metrics_port)
+    update_thread = Thread(target=update_modem_info, args=(cm,))
+    update_thread.start()
+    logger.info("Metric update thread started.")
+    update_thread.join()
+
+    logger.info("Goodbye!")

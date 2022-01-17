@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "prometheus-ubee-exporter"
+version = "0.1.0"
+description = ""
+authors = ["Daan van Gorkum <djvg@djvg.net>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+beautifulsoup4 = "^4.10.0"
+prometheus-client = "^0.12.0"
+requests = "^2.27.1"
+esprima = "^4.0.1"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
