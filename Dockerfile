@@ -16,4 +16,6 @@ RUN pip install -r requirements.txt
 WORKDIR /app
 COPY src/ ./
 
+EXPOSE 9908/tcp
+
 ENTRYPOINT ["./prometheus-ubee-exporter"]
