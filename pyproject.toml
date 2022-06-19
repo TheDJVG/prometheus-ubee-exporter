@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "prometheus-ubee-exporter"
-version = "0.1.0"
+version = "0.1.1"
 description = ""
 authors = ["Daan van Gorkum <djvg@djvg.net>"]
 
